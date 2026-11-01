@@ -1,11 +1,11 @@
-# Muse-Chat-MCP + DSH app = android apps agent:
+# Muse-Chat-MCP + DSH app = android apps agent(免费豆包手机):
     先在你的 "debian电脑" 或 "pixel手机的android linux terminal子系统"  里运行:
     $ git clone https://github.com/duclm1x1/Muse-Chat-MCP
     $ cd Muse-Chat-MCP
     $ chrome --user-data-dir="$PWD/.muse-profile" --profile-directory=Default
     登录你的muse ai小号, 然后关闭chrome, 再测试:
     $ npm run selftest
-    看到ready字样就可以启动了:
+    看到ready字样就可以启动了(会打开前面登录过的chrome profile网页):
     $ MUSE_SHIM_HOST=0.0.0.0 npm start
     在 android linux terminal子系统的话还要运行(先要安装https://github.com/thedjchi/Shizuku 这个fork版, 不要用原版, 并启用tcp mode):
     $ adb connect $(ip route | grep default | awk '{print $3}')
@@ -14,7 +14,7 @@
 
     然后安装 https://github.com/jackwener/DSH-Android 应用
     在DSH app的settings/model services/Add provider/Custom里添加http://<你电脑ip 或 你手机wifi ip>:8787/v1 以及API key
-    再点击Fetch models及Test and save即可
+    再点击Fetch models及Test and save即可, 但点击test之前似乎需要自己手工到Muse-Chat-MCP打开的muse ai里开一个新的side chat, 否则test会失败
     另外DSH app的悬浮状态需要在App info的右上角"..."点击"Allow restricted settings"才能解除App info页面下Display over other apps的灰色限制
     
 =====================================================================
