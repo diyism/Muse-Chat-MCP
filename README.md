@@ -1,3 +1,21 @@
+    先在你的 "debian电脑" 或 "pixel手机的android linux terminal子系统"  里运行:
+    $ git clone https://github.com/duclm1x1/Muse-Chat-MCP
+    $ cd Muse-Chat-MCP
+    $ chrome --user-data-dir="$PWD/.muse-profile" --profile-directory=Default
+    登录你的muse ai小号, 然后关闭chrome, 再测试:
+    $ npm run selftest
+    看到ready字样就可以启动了:
+    $ MUSE_SHIM_HOST=0.0.0.0 npm start
+    在 android linux terminal子系统的话还要运行(先要安装https://github.com/thedjchi/Shizuku 这个fork版, 不要用原版, 并启用tcp mode):
+    $ adb connect $(ip route | grep default | awk '{print $3}')
+    $ adb shell "nohup nc -L -p 8787 nc $(ip route | grep default | awk '{print $9}') 8787
+    或者设置android linux terminal的 Settings/Security/Auto-forward all ports
+
+    然后安装 https://github.com/jackwener/DSH-Android 应用
+    在DSH app的settings/model services/Add provider/Custom里添加http://<你电脑ip 或 你手机wifi ip>:8787/v1 以及API key再Fetch models及Test and save即可
+    
+=====================================================================
+
 # Muse-Chat-MCP
 
 **Use Meta Muse — the [muse.ai](https://muse.ai) "Hatch" agent — from any MCP client or any OpenAI-compatible client, with your own account and quota.**
