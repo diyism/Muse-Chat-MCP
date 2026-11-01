@@ -12,7 +12,9 @@
     或者设置android linux terminal的 Settings/Security/Auto-forward all ports
 
     然后安装 https://github.com/jackwener/DSH-Android 应用
-    在DSH app的settings/model services/Add provider/Custom里添加http://<你电脑ip 或 你手机wifi ip>:8787/v1 以及API key再Fetch models及Test and save即可
+    在DSH app的settings/model services/Add provider/Custom里添加http://<你电脑ip 或 你手机wifi ip>:8787/v1 以及API key
+    再点击Fetch models及Test and save即可
+    另外DSH app的悬浮状态需要在App info的右上角"..."点击"Allow restricted settings"才能解除App info页面下Display over other apps的灰色限制
     
 =====================================================================
 
