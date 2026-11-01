@@ -1,4 +1,5 @@
-# Muse-Chat-MCP + DSH app = android apps agent(免费豆包手机):
+# Muse-Chat-MCP + DSH app = android apps agent
+    Muse-Chat-MCP + DSH app = android apps agent(免费豆包手机):
     先在你的 "debian电脑" 或 "pixel手机的android linux terminal子系统"  里运行:
     $ git clone https://github.com/duclm1x1/Muse-Chat-MCP
     $ cd Muse-Chat-MCP
