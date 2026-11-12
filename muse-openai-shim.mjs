@@ -79,8 +79,9 @@ function buildPrompt(body) {
     }))
     parts.push(
       [
-        'If the request needs a tool, reply with ONLY this JSON and nothing else:',
+        'If the request needs a tool, reply with ONLY valid JSON and nothing else:',
         '{"tool_calls":[{"name":"<tool name>","arguments":{ ... }}]}',
+        'This must be strict JSON: escape every double quote inside string values as \\".',
         'You are only DECIDING whether a tool call should be made — do NOT perform the action,',
         'do NOT browse, do NOT invent results. Otherwise reply normally. Tool schemas:',
         JSON.stringify(schemas),
@@ -92,7 +93,121 @@ function buildPrompt(body) {
   return parts.join('\n\n').trim()
 }
 
-function parseToolCalls(text) {
+// Muse occasionally emits JSON-looking tool calls with shell quotes left
+// unescaped inside arguments.command, for example:
+//   {"command":"echo "hello""}
+// That is invalid JSON, but the structure is still unambiguous for the
+// command strings we receive. First use JSON.parse; then use this conservative
+// JSON-like parser as a compatibility fallback. The resulting arguments are
+// always re-serialized with JSON.stringify before they leave this shim.
+function parseJsonLike(text) {
+  let pos = 0
+
+  const skip = () => {
+    while (/\s/.test(text[pos] || '')) pos++
+  }
+
+  const error = (message) => { throw new Error(`${message} at ${pos}`) }
+
+  const parseString = (key = false) => {
+    if (text[pos] !== '"') error('expected string')
+    pos++
+    let out = ''
+    while (pos < text.length) {
+      const ch = text[pos++]
+      if (ch === '"') {
+        // A normal closing quote is followed by JSON punctuation. A quote
+        // followed by shell text is part of an unescaped command string.
+        let next = pos
+        while (/\s/.test(text[next] || '')) next++
+        const terminator = text[next]
+        if (terminator === ',' || terminator === '}' || terminator === ']' || (key && terminator === ':')) {
+          return out
+        }
+        out += '"'
+        continue
+      }
+      if (ch !== '\\') {
+        out += ch
+        continue
+      }
+
+      if (pos >= text.length) error('unterminated escape')
+      const esc = text[pos++]
+      const escapes = { '"': '"', '\\': '\\', '/': '/', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t' }
+      if (Object.hasOwn(escapes, esc)) {
+        out += escapes[esc]
+      } else if (esc === 'u') {
+        const hex = text.slice(pos, pos + 4)
+        if (!/^[0-9a-f]{4}$/i.test(hex)) error('invalid unicode escape')
+        out += String.fromCharCode(Number.parseInt(hex, 16))
+        pos += 4
+      } else {
+        // Preserve non-JSON escapes such as \\@ instead of discarding data.
+        out += `\\${esc}`
+      }
+    }
+    error('unterminated string')
+  }
+
+  const parseNumber = () => {
+    const match = text.slice(pos).match(/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/)
+    if (!match) error('invalid value')
+    pos += match[0].length
+    return Number(match[0])
+  }
+
+  const parseValue = () => {
+    skip()
+    const ch = text[pos]
+    if (ch === '"') return parseString()
+    if (ch === '{') return parseObject()
+    if (ch === '[') return parseArray()
+    if (text.startsWith('true', pos)) { pos += 4; return true }
+    if (text.startsWith('false', pos)) { pos += 5; return false }
+    if (text.startsWith('null', pos)) { pos += 4; return null }
+    return parseNumber()
+  }
+
+  function parseObject() {
+    if (text[pos++] !== '{') error('expected object')
+    skip()
+    const out = {}
+    if (text[pos] === '}') { pos++; return out }
+    while (pos < text.length) {
+      skip()
+      const key = parseString(true)
+      skip()
+      if (text[pos++] !== ':') error('expected colon')
+      out[key] = parseValue()
+      skip()
+      if (text[pos] === '}') { pos++; return out }
+      if (text[pos++] !== ',') error('expected comma')
+    }
+    error('unterminated object')
+  }
+
+  function parseArray() {
+    if (text[pos++] !== '[') error('expected array')
+    skip()
+    const out = []
+    if (text[pos] === ']') { pos++; return out }
+    while (pos < text.length) {
+      out.push(parseValue())
+      skip()
+      if (text[pos] === ']') { pos++; return out }
+      if (text[pos++] !== ',') error('expected comma')
+    }
+    error('unterminated array')
+  }
+
+  const value = parseValue()
+  skip()
+  if (pos !== text.length) error('unexpected trailing text')
+  return value
+}
+
+export function parseToolCalls(text) {
   if (!text) return null
   const trimmed = text.trim()
   // Accept a bare JSON object or one inside a ```json fence.
@@ -100,7 +215,17 @@ function parseToolCalls(text) {
   const candidate = (fenced ? fenced[1] : trimmed).trim()
   if (!candidate.startsWith('{') || !candidate.endsWith('}')) return null
   let obj
-  try { obj = JSON.parse(candidate) } catch { return null }
+  try {
+    obj = JSON.parse(candidate)
+  } catch {
+    try {
+      obj = parseJsonLike(candidate)
+      log('accepted JSON-like tool-call output after strict JSON parsing failed')
+    } catch (looseError) {
+      log(`tool-call parsing failed: ${looseError.message}`)
+      return null
+    }
+  }
   const calls = obj && (obj.tool_calls || obj.toolCalls)
   if (!Array.isArray(calls) || !calls.length) return null
   return calls
