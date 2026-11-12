@@ -6,8 +6,8 @@
     $ chrome --user-data-dir="$PWD/.muse-profile" --profile-directory=Default
     登录你的muse ai小号, 然后关闭chrome, 再测试:
     $ npm run selftest
-    看到ready字样就可以启动了(会打开前面登录过的chrome profile网页):
-    $ MUSE_SHIM_HOST=0.0.0.0 npm start
+    看到ready字样就可以启动了(会打开前面登录过的chrome profile网页, MUSE_URL指定side chat, 避免塞到main chat):
+    $ MUSE_SHIM_HOST=0.0.0.0 MUSE_URL="https://muse.ai/thread/..." npm start
     在 android linux terminal子系统的话还要运行(先要安装https://github.com/thedjchi/Shizuku 这个fork版, 不要用原版, 并启用tcp mode):
     $ adb connect $(ip route | grep default | awk '{print $3}')
     $ adb shell "nohup nc -L -p 8787 nc $(ip route | grep default | awk '{print $9}') 8787
