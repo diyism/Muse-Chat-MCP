@@ -102,6 +102,10 @@ function buildPrompt(body) {
 // always re-serialized with JSON.stringify before they leave this shim.
 function parseJsonLike(text) {
   let pos = 0
+  const commandArgumentKeys = new Set([
+    'description', 'command', 'timeoutMs', 'workdir', 'run_in_background',
+    'sandbox_permissions', 'justification',
+  ])
 
   const skip = () => {
     while (/\s/.test(text[pos] || '')) pos++
@@ -150,6 +154,55 @@ function parseJsonLike(text) {
     error('unterminated string')
   }
 
+  const parseCommandString = () => {
+    if (text[pos] !== '"') error('expected command string')
+    pos++
+    let out = ''
+    while (pos < text.length) {
+      const ch = text[pos++]
+      if (ch === '"') {
+        let next = pos
+        while (/\s/.test(text[next] || '')) next++
+        if (text[next] === ',') {
+          const following = text.slice(next + 1).match(/^\s*"([A-Za-z_][A-Za-z0-9_-]*)"\s*:/)
+          if (following && commandArgumentKeys.has(following[1])) return out
+        }
+        if (text[next] === '}' || text[next] === ']') {
+          // An embedded JSON object can also have a quote followed by `}` or
+          // `]`. Only treat it as the command terminator when the following
+          // punctuation can close the surrounding tool-call structure.
+          let after = next + 1
+          while (text[after] === '}' || text[after] === ']') after++
+          while (/\s/.test(text[after] || '')) after++
+          if (after >= text.length) return out
+          if (text[after] === ',') {
+            const following = text.slice(after + 1).match(/^\s*"([A-Za-z_][A-Za-z0-9_-]*)"\s*:/)
+            if (following && commandArgumentKeys.has(following[1])) return out
+          }
+        }
+        // This quote belongs to the shell command, commonly around an
+        // embedded JSON payload or a quoted echo argument.
+        out += '"'
+        continue
+      }
+      if (ch !== '\\') {
+        out += ch
+        continue
+      }
+      if (pos >= text.length) error('unterminated command escape')
+      const esc = text[pos++]
+      const escapes = { '"': '"', '\\': '\\', '/': '/', b: '\b', f: '\f', n: '\n', r: '\r', t: '\t' }
+      if (Object.hasOwn(escapes, esc)) out += escapes[esc]
+      else if (esc === 'u') {
+        const hex = text.slice(pos, pos + 4)
+        if (!/^[0-9a-f]{4}$/i.test(hex)) error('invalid command unicode escape')
+        out += String.fromCharCode(Number.parseInt(hex, 16))
+        pos += 4
+      } else out += `\\${esc}`
+    }
+    error('unterminated command string')
+  }
+
   const parseNumber = () => {
     const match = text.slice(pos).match(/^-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?/)
     if (!match) error('invalid value')
@@ -179,7 +232,7 @@ function parseJsonLike(text) {
       const key = parseString(true)
       skip()
       if (text[pos++] !== ':') error('expected colon')
-      out[key] = parseValue()
+      out[key] = key === 'command' && text[pos] === '"' ? parseCommandString() : parseValue()
       skip()
       if (text[pos] === '}') { pos++; return out }
       if (text[pos++] !== ',') error('expected comma')
@@ -212,7 +265,15 @@ export function parseToolCalls(text) {
   const trimmed = text.trim()
   // Accept a bare JSON object or one inside a ```json fence.
   const fenced = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i)
-  const candidate = (fenced ? fenced[1] : trimmed).trim()
+  let candidate = (fenced ? fenced[1] : trimmed).trim()
+  // Some adapters serialize the model's JSON one extra time before placing it
+  // in assistant.content. Unwrap only a JSON string, never arbitrary text.
+  if (candidate.startsWith('"') && candidate.endsWith('"')) {
+    try {
+      const decoded = JSON.parse(candidate)
+      if (typeof decoded === 'string') candidate = decoded.trim()
+    } catch {}
+  }
   if (!candidate.startsWith('{') || !candidate.endsWith('}')) return null
   let obj
   try {
@@ -226,7 +287,13 @@ export function parseToolCalls(text) {
       return null
     }
   }
-  const calls = obj && (obj.tool_calls || obj.toolCalls)
+  // Muse may Markdown-escape the underscore in the top-level key while
+  // rendering the reply as text (`tool\_calls`). Normalize only object keys;
+  // command contents must remain byte-for-byte intact.
+  const toolCallsKey = obj && typeof obj === 'object'
+    ? Object.keys(obj).find((key) => key.replace(/\\_/g, '_') === 'tool_calls' || key === 'toolCalls')
+    : undefined
+  const calls = toolCallsKey ? obj[toolCallsKey] : null
   if (!Array.isArray(calls) || !calls.length) return null
   return calls
     .map((c, i) => {
