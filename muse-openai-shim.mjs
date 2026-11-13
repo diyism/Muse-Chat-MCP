@@ -110,6 +110,16 @@ function parseJsonLike(text) {
     'timeoutMs', 'workdir', 'run_in_background',
     'sandbox_permissions', 'justification',
   ])
+  // Common argument keys used after a free-form string. Restricting loose
+  // string termination to these keys avoids mistaking commas and braces in
+  // source code for the end of arguments.content.
+  const argumentTailKeys = new Set([
+    ...commandTailKeys,
+    'name', 'arguments', 'description', 'command',
+    'file_path', 'content', 'path', 'encoding', 'mode',
+  ])
+  const markdownEscapedPunctuation = new Set('\\\\!"#$%&\'()*+,-./:;<=>?@[]^_`{|}~')
+  const decodeLooseEscape = (esc) => markdownEscapedPunctuation.has(esc) ? esc : `\\${esc}`
 
   const skip = () => {
     while (/\s/.test(text[pos] || '')) pos++
@@ -117,7 +127,23 @@ function parseJsonLike(text) {
 
   const error = (message) => { throw new Error(`${message} at ${pos}`) }
 
-  const parseString = (key = false) => {
+  const looseStringEndsAt = (next) => {
+    const terminator = text[next]
+    if (terminator === ',') {
+      const following = text.slice(next + 1).match(/^\s*"([A-Za-z_][A-Za-z0-9_-]*)"\s*:/)
+      return following && argumentTailKeys.has(following[1])
+    }
+    if (terminator !== '}' && terminator !== ']') return false
+    let after = next + 1
+    while (text[after] === '}' || text[after] === ']') after++
+    while (/\s/.test(text[after] || '')) after++
+    if (after >= text.length) return true
+    if (text[after] !== ',') return false
+    const following = text.slice(after + 1).match(/^\s*"([A-Za-z_][A-Za-z0-9_-]*)"\s*:/)
+    return following && argumentTailKeys.has(following[1])
+  }
+
+  const parseString = (key = false, loose = false) => {
     if (text[pos] !== '"') error('expected string')
     pos++
     let out = ''
@@ -129,7 +155,10 @@ function parseJsonLike(text) {
         let next = pos
         while (/\s/.test(text[next] || '')) next++
         const terminator = text[next]
-        if (terminator === ',' || terminator === '}' || terminator === ']' || (key && terminator === ':')) {
+        const ends = loose
+          ? looseStringEndsAt(next)
+          : terminator === ',' || terminator === '}' || terminator === ']' || (key && terminator === ':')
+        if (ends) {
           return out
         }
         out += '"'
@@ -151,8 +180,10 @@ function parseJsonLike(text) {
         out += String.fromCharCode(Number.parseInt(hex, 16))
         pos += 4
       } else {
-        // Preserve non-JSON escapes such as \\@ instead of discarding data.
-        out += `\\${esc}`
+        // Muse's Markdown renderer escapes punctuation such as \\_, \\@ and
+        // \\<. Decode those presentation escapes, but preserve other unknown
+        // backslash sequences instead of discarding data.
+        out += decodeLooseEscape(esc)
       }
     }
     error('unterminated string')
@@ -202,7 +233,7 @@ function parseJsonLike(text) {
         if (!/^[0-9a-f]{4}$/i.test(hex)) error('invalid command unicode escape')
         out += String.fromCharCode(Number.parseInt(hex, 16))
         pos += 4
-      } else out += `\\${esc}`
+      } else out += decodeLooseEscape(esc)
     }
     error('unterminated command string')
   }
@@ -214,29 +245,35 @@ function parseJsonLike(text) {
     return Number(match[0])
   }
 
-  const parseValue = () => {
+  const parseValue = (loose = false) => {
     skip()
     const ch = text[pos]
-    if (ch === '"') return parseString()
-    if (ch === '{') return parseObject()
-    if (ch === '[') return parseArray()
+    if (ch === '"') return parseString(false, loose)
+    if (ch === '{') return parseObject(loose)
+    if (ch === '[') return parseArray(loose)
     if (text.startsWith('true', pos)) { pos += 4; return true }
     if (text.startsWith('false', pos)) { pos += 5; return false }
     if (text.startsWith('null', pos)) { pos += 4; return null }
     return parseNumber()
   }
 
-  function parseObject() {
+  function parseObject(looseStrings = false) {
     if (text[pos++] !== '{') error('expected object')
     skip()
     const out = {}
     if (text[pos] === '}') { pos++; return out }
     while (pos < text.length) {
       skip()
-      const key = parseString(true)
+      // Muse may Markdown-escape underscores in JSON keys. Normalize keys
+      // only; backslashes inside string values must remain untouched.
+      const key = parseString(true).replace(/\\_/g, '_')
       skip()
       if (text[pos++] !== ':') error('expected colon')
-      out[key] = key === 'command' && text[pos] === '"' ? parseCommandString() : parseValue()
+      out[key] = key === 'command' && text[pos] === '"'
+        ? parseCommandString()
+        : key === 'arguments' && text[pos] === '{'
+          ? parseObject(true)
+          : parseValue(looseStrings)
       skip()
       if (text[pos] === '}') { pos++; return out }
       // Muse occasionally omits the closing brace for the individual tool
@@ -249,13 +286,13 @@ function parseJsonLike(text) {
     error('unterminated object')
   }
 
-  function parseArray() {
+  function parseArray(looseStrings = false) {
     if (text[pos++] !== '[') error('expected array')
     skip()
     const out = []
     if (text[pos] === ']') { pos++; return out }
     while (pos < text.length) {
-      out.push(parseValue())
+      out.push(parseValue(looseStrings))
       skip()
       if (text[pos] === ']') { pos++; return out }
       if (text[pos++] !== ',') error('expected comma')
