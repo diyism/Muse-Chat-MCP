@@ -102,8 +102,12 @@ function buildPrompt(body) {
 // always re-serialized with JSON.stringify before they leave this shim.
 function parseJsonLike(text) {
   let pos = 0
-  const commandArgumentKeys = new Set([
-    'description', 'command', 'timeoutMs', 'workdir', 'run_in_background',
+  // Keys that may legally follow `command` in a bash tool's arguments.
+  // Do not include `description` or `command`: those names are common inside
+  // embedded JSON/heredocs and would make an inner quote look like the end of
+  // the outer command string.
+  const commandTailKeys = new Set([
+    'timeoutMs', 'workdir', 'run_in_background',
     'sandbox_permissions', 'justification',
   ])
 
@@ -165,7 +169,7 @@ function parseJsonLike(text) {
         while (/\s/.test(text[next] || '')) next++
         if (text[next] === ',') {
           const following = text.slice(next + 1).match(/^\s*"([A-Za-z_][A-Za-z0-9_-]*)"\s*:/)
-          if (following && commandArgumentKeys.has(following[1])) return out
+          if (following && commandTailKeys.has(following[1])) return out
         }
         if (text[next] === '}' || text[next] === ']') {
           // An embedded JSON object can also have a quote followed by `}` or
@@ -177,7 +181,7 @@ function parseJsonLike(text) {
           if (after >= text.length) return out
           if (text[after] === ',') {
             const following = text.slice(after + 1).match(/^\s*"([A-Za-z_][A-Za-z0-9_-]*)"\s*:/)
-            if (following && commandArgumentKeys.has(following[1])) return out
+            if (following && commandTailKeys.has(following[1])) return out
           }
         }
         // This quote belongs to the shell command, commonly around an
@@ -279,6 +283,14 @@ export function parseToolCalls(text) {
       if (typeof decoded === 'string') candidate = decoded.trim()
     } catch {}
   }
+  // Also tolerate a short prose prefix/suffix around the tool object. Do not
+  // apply this to arbitrary JSON: require the distinctive tool_calls marker.
+  const marker = candidate.search(/\{\s*"tool(?:_|\\_)calls"\s*:/)
+  if (marker > 0) candidate = candidate.slice(marker).trim()
+  if (marker >= 0 && !candidate.endsWith('}')) {
+    const end = candidate.lastIndexOf('}')
+    if (end >= 0) candidate = candidate.slice(0, end + 1).trim()
+  }
   if (!candidate.startsWith('{') || !candidate.endsWith('}')) return null
   let obj
   try {
@@ -299,7 +311,10 @@ export function parseToolCalls(text) {
     ? Object.keys(obj).find((key) => key.replace(/\\_/g, '_') === 'tool_calls' || key === 'toolCalls')
     : undefined
   const calls = toolCallsKey ? obj[toolCallsKey] : null
-  if (!Array.isArray(calls) || !calls.length) return null
+  if (!Array.isArray(calls) || !calls.length) {
+    log(`tool-call shape not found candidateChars=${candidate.length} keys=${obj && typeof obj === 'object' ? Object.keys(obj).join(',') : 'non-object'}`)
+    return null
+  }
   return calls
     .map((c, i) => {
       const name = c.name || c?.function?.name
@@ -410,6 +425,7 @@ async function handleChat(req, res, body) {
         const r = await driver.chat(prompt, { timeoutMs, newThread, files, chat })
         if (r.error) throw new Error(r.error)
         const calls = parseToolCalls(r.reply)
+        log(`tool parse stream replyChars=${(r.reply || '').length} parsedCalls=${calls?.length || 0}`)
         if (calls && calls.length) {
           const deltas = calls.map((c, i) => ({
             index: i, id: c.id, type: 'function',
@@ -450,6 +466,7 @@ async function handleChat(req, res, body) {
     const r = await driver.chat(prompt, { timeoutMs, newThread, files, chat })
     if (r.error && !r.reply) throw new Error(r.error)
     const calls = wantTools ? parseToolCalls(r.reply) : null
+    if (wantTools) log(`tool parse nonStream replyChars=${(r.reply || '').length} parsedCalls=${calls?.length || 0}`)
 
     const message = calls && calls.length
       ? { role: 'assistant', content: null, tool_calls: calls }
