@@ -235,6 +235,11 @@ function parseJsonLike(text) {
       out[key] = key === 'command' && text[pos] === '"' ? parseCommandString() : parseValue()
       skip()
       if (text[pos] === '}') { pos++; return out }
+      // Muse occasionally omits the closing brace for the individual tool
+      // call: `..."}]}` instead of `..."}}]}`. Only apply this recovery to
+      // an object that already has the tool-call shape, and leave `]` for
+      // parseArray() to consume.
+      if (text[pos] === ']' && ('name' in out || 'arguments' in out)) return out
       if (text[pos++] !== ',') error('expected comma')
     }
     error('unterminated object')
