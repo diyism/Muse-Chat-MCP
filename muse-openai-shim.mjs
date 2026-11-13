@@ -115,11 +115,15 @@ function parseJsonLike(text) {
   // source code for the end of arguments.content.
   const argumentTailKeys = new Set([
     ...commandTailKeys,
-    'name', 'arguments', 'description', 'command',
-    'file_path', 'content', 'path', 'encoding', 'mode',
+    'name', 'arguments', 'description', 'command', 'prompt',
+    'file_path', 'content', 'path', 'encoding', 'mode', 'after_seconds',
   ])
   const markdownEscapedPunctuation = new Set('\\\\!"#$%&\'()*+,-./:;<=>?@[]^_`{|}~')
   const decodeLooseEscape = (esc) => markdownEscapedPunctuation.has(esc) ? esc : `\\${esc}`
+  const followingArgumentKey = (from) => {
+    const match = text.slice(from).match(/^\s*"([A-Za-z_\\][A-Za-z0-9_\\-]*)"\s*:/)
+    return match ? match[1].replace(/\\_/g, '_') : null
+  }
 
   const skip = () => {
     while (/\s/.test(text[pos] || '')) pos++
@@ -130,8 +134,8 @@ function parseJsonLike(text) {
   const looseStringEndsAt = (next) => {
     const terminator = text[next]
     if (terminator === ',') {
-      const following = text.slice(next + 1).match(/^\s*"([A-Za-z_][A-Za-z0-9_-]*)"\s*:/)
-      return following && argumentTailKeys.has(following[1])
+      const following = followingArgumentKey(next + 1)
+      return following && argumentTailKeys.has(following)
     }
     if (terminator !== '}' && terminator !== ']') return false
     let after = next + 1
@@ -139,8 +143,8 @@ function parseJsonLike(text) {
     while (/\s/.test(text[after] || '')) after++
     if (after >= text.length) return true
     if (text[after] !== ',') return false
-    const following = text.slice(after + 1).match(/^\s*"([A-Za-z_][A-Za-z0-9_-]*)"\s*:/)
-    return following && argumentTailKeys.has(following[1])
+    const following = followingArgumentKey(after + 1)
+    return following && argumentTailKeys.has(following)
   }
 
   const parseString = (key = false, loose = false) => {
@@ -199,8 +203,8 @@ function parseJsonLike(text) {
         let next = pos
         while (/\s/.test(text[next] || '')) next++
         if (text[next] === ',') {
-          const following = text.slice(next + 1).match(/^\s*"([A-Za-z_][A-Za-z0-9_-]*)"\s*:/)
-          if (following && commandTailKeys.has(following[1])) return out
+          const following = followingArgumentKey(next + 1)
+          if (following && commandTailKeys.has(following)) return out
         }
         if (text[next] === '}' || text[next] === ']') {
           // An embedded JSON object can also have a quote followed by `}` or
@@ -211,8 +215,8 @@ function parseJsonLike(text) {
           while (/\s/.test(text[after] || '')) after++
           if (after >= text.length) return out
           if (text[after] === ',') {
-            const following = text.slice(after + 1).match(/^\s*"([A-Za-z_][A-Za-z0-9_-]*)"\s*:/)
-            if (following && commandTailKeys.has(following[1])) return out
+            const following = followingArgumentKey(after + 1)
+            if (following && commandTailKeys.has(following)) return out
           }
         }
         // This quote belongs to the shell command, commonly around an
@@ -264,8 +268,8 @@ function parseJsonLike(text) {
     if (text[pos] === '}') { pos++; return out }
     while (pos < text.length) {
       skip()
-      // Muse may Markdown-escape underscores in JSON keys. Normalize keys
-      // only; backslashes inside string values must remain untouched.
+      // Muse may Markdown-escape underscores in JSON keys. Normalize keys;
+      // string values are decoded separately only for Markdown punctuation.
       const key = parseString(true).replace(/\\_/g, '_')
       skip()
       if (text[pos++] !== ':') error('expected colon')
@@ -462,13 +466,16 @@ async function handleChat(req, res, body) {
         const r = await driver.chat(prompt, { timeoutMs, newThread, files, chat })
         if (r.error) throw new Error(r.error)
         const calls = parseToolCalls(r.reply)
-        log(`tool parse stream replyChars=${(r.reply || '').length} parsedCalls=${calls?.length || 0}`)
+        const argChars = calls?.map((c) => `${c.function.name}:${c.function.arguments.length}`).join(',') || '-'
+        log(`tool parse stream replyChars=${(r.reply || '').length} parsedCalls=${calls?.length || 0} argChars=${argChars}`)
         if (calls && calls.length) {
           const deltas = calls.map((c, i) => ({
             index: i, id: c.id, type: 'function',
             function: { name: c.function.name, arguments: c.function.arguments },
           }))
-          write(chunk(id, model, created, { tool_calls: deltas }))
+          const toolChunk = chunk(id, model, created, { tool_calls: deltas })
+          log(`tool emit stream payloadChars=${toolChunk.length}`)
+          write(toolChunk)
           finishReason = 'tool_calls'
         } else {
           const s = r.reply || ''
@@ -503,7 +510,10 @@ async function handleChat(req, res, body) {
     const r = await driver.chat(prompt, { timeoutMs, newThread, files, chat })
     if (r.error && !r.reply) throw new Error(r.error)
     const calls = wantTools ? parseToolCalls(r.reply) : null
-    if (wantTools) log(`tool parse nonStream replyChars=${(r.reply || '').length} parsedCalls=${calls?.length || 0}`)
+    if (wantTools) {
+      const argChars = calls?.map((c) => `${c.function.name}:${c.function.arguments.length}`).join(',') || '-'
+      log(`tool parse nonStream replyChars=${(r.reply || '').length} parsedCalls=${calls?.length || 0} argChars=${argChars}`)
+    }
 
     const message = calls && calls.length
       ? { role: 'assistant', content: null, tool_calls: calls }
