@@ -117,6 +117,7 @@ function parseJsonLike(text) {
     ...commandTailKeys,
     'name', 'arguments', 'description', 'command', 'prompt',
     'file_path', 'content', 'path', 'encoding', 'mode', 'after_seconds',
+    'target', 'by', 'value', 'type', 'url', 'selector', 'index',
   ])
   const markdownEscapedPunctuation = new Set('\\\\!"#$%&\'()*+,-./:;<=>?@[]^_`{|}~')
   const decodeLooseEscape = (esc) => markdownEscapedPunctuation.has(esc) ? esc : `\\${esc}`
@@ -332,7 +333,10 @@ export function parseToolCalls(text) {
     const end = candidate.lastIndexOf('}')
     if (end >= 0) candidate = candidate.slice(0, end + 1).trim()
   }
-  if (!candidate.startsWith('{') || !candidate.endsWith('}')) return null
+  if (!candidate.startsWith('{') || !candidate.endsWith('}')) {
+    log(`tool-call envelope rejected chars=${candidate.length} marker=${marker} startsWithObject=${candidate.startsWith('{')} endsWithObject=${candidate.endsWith('}')}`)
+    return null
+  }
   let obj
   try {
     obj = JSON.parse(candidate)
